@@ -1,0 +1,302 @@
+name: 'Build'
+
+on:
+  push:
+    branches:
+      - v8
+  pull_request:
+    branches:
+      - v8
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_VERSION: 8.0.5
+  DOTNET_ASPIRE_VERSION: 8.0.1
+  DOTNET_SDK_VERSION: 8.0.300
+  DOTNET_RUNTIME_VERSION: 8.0.5
+  DOTNET_ASPNETCORE_VERSION: 8.0.5
+  DOTNET_INSTALLER_VERSION: 8.0.300
+
+jobs:
+  build_aspire:
+    name: Build Aspire
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch source
+        run: |
+          git clone https://github.com/dotnet/aspire.git --single-branch --depth 1 --branch v${{ env.DOTNET_ASPIRE_VERSION }}
+
+      - name: Build
+        run: |
+          set -x
+          source common.sh
+          calculate_build_id v${{ env.DOTNET_ASPIRE_VERSION }}
+
+          docker run --rm -v ${{ github.workspace }}/aspire:/aspire -w /aspire -e ROOTFS_DIR=/crossrootfs/x86 mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-cross-x86-net8.0 /aspire/build.sh --restore --build --ci --configuration Release --os linux --arch x86 --pack /p:OfficialBuildId=$OFFICIALBUILDID
+
+      - name: List artifacts
+        run: ls -lR aspire/artifacts
+
+      - name: Upload Packages Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages_aspire
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            aspire/artifacts/packages/Release/Shipping/Microsoft.*.nupkg
+
+  build_sdk:
+    name: Build SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch source
+        run: |
+          git clone https://github.com/dotnet/sdk.git --single-branch --depth 1 --branch v${{ env.DOTNET_SDK_VERSION }}
+
+      - name: Build
+        run: |
+          set -x
+          source common.sh
+          calculate_build_id v${{ env.DOTNET_SDK_VERSION }}
+
+          sdk/build.sh --ci --configuration Release /p:OfficialBuildId=$OFFICIALBUILDID && sdk/build.sh --ci --configuration Release /p:OfficialBuildId=$OFFICIALBUILDID --pack
+
+      - name: List artifacts
+        run: ls -lR sdk/artifacts
+
+      - name: Upload Packages Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages_sdk
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            sdk/artifacts/packages/Release/NonShipping/dotnet-toolset-internal-*.zip
+
+  build_runtime:
+    name: Build Runtime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch source
+        run: |
+          git clone https://github.com/dotnet/runtime.git --single-branch --depth 1 --branch v${{ env.DOTNET_RUNTIME_VERSION }}
+
+      - name: Build
+        run: |
+          set -x
+          source common.sh
+          calculate_build_id v${{ env.DOTNET_RUNTIME_VERSION }}
+
+          docker run --rm -v ${{ github.workspace }}/runtime:/runtime -w /runtime -e ROOTFS_DIR=/crossrootfs/x86 mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-cross-x86-net8.0 /runtime/eng/build.sh --ci --configuration Release --cross --os linux --arch x86 /p:OfficialBuildId=$OFFICIALBUILDID --subset Clr.Native+Host.Native
+          docker run --rm -v ${{ github.workspace }}/runtime:/runtime -w /runtime -e ROOTFS_DIR=/crossrootfs/x86 mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-cross-x86-net8.0 /runtime/eng/build.sh --ci --configuration Release --cross --os linux --arch x86 /p:OfficialBuildId=$OFFICIALBUILDID /p:AppHostSourcePath=/runtime/artifacts/obj/linux-x86.Release/apphost/standalone/apphost
+
+      - name: List artifacts
+        run: ls -lR runtime/artifacts
+
+      - name: Upload Packages Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages_runtime
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            runtime/artifacts/packages/Release/Shipping/dotnet-runtime-*-linux-x86.tar.gz
+            runtime/artifacts/packages/Release/Shipping/Microsoft.*.linux-x86.*.nupkg
+
+  build_aspnetcore:
+    name: Build ASP.NET Core
+    needs: build_runtime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Setup dotnet
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.x
+
+      - name: Fetch source
+        run: |
+          git clone https://github.com/dotnet/aspnetcore.git --single-branch --depth 1 --branch v${{ env.DOTNET_ASPNETCORE_VERSION }}
+          git -C aspnetcore submodule update --init
+
+      - name: Download Runtime Packages Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: packages_runtime
+          path: runtime/artifacts/packages/Release/Shipping
+
+      - name: Configure
+        run: |
+          set -x
+
+          dotnet nuget add source ../runtime/artifacts/packages/Release/Shipping/ --name local --configfile aspnetcore/NuGet.config
+
+          mkdir -p aspnetcore/artifacts/obj/Microsoft.AspNetCore.App.Runtime
+          cp runtime/artifacts/packages/Release/Shipping/dotnet-runtime-*-linux-x86.tar.gz aspnetcore/artifacts/obj/Microsoft.AspNetCore.App.Runtime
+
+          sed -i.ORI 's/linux-x64;/&linux-x86;/' aspnetcore/Directory.Build.props
+          sed -i.ORI 's/linux-x64/linux-x86/' aspnetcore/eng/Dependencies.props
+
+      - name: Build
+        run: |
+          set -x
+          source common.sh
+          calculate_build_id v${{ env.DOTNET_ASPNETCORE_VERSION }}
+
+          aspnetcore/eng/build.sh --ci --os-name linux --arch x86 --configuration Release --all --no-build-java --pack /p:CrossgenOutput=false /p:TreatWarningsAsErrors=false /p:OfficialBuildId=$OFFICIALBUILDID
+
+      - name: List artifacts
+        run: ls -lR aspnetcore/artifacts
+
+      - name: Upload Packages Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages_aspnetcore
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            aspnetcore/artifacts/packages/Release/Shipping/Microsoft.*.linux-x86.*.nupkg
+
+      - name: Upload Installers Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers_aspnetcore
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            aspnetcore/artifacts/installers/Release/aspnetcore-runtime-*-linux-x86.tar.gz
+
+  build_installer:
+    name: Build Installer
+    needs: [build_aspire, build_runtime, build_aspnetcore, build_sdk]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup dotnet
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.x
+
+      - name: Fetch source
+        run: |
+          git clone https://github.com/dotnet/installer.git --single-branch --depth 1 --branch v${{ env.DOTNET_INSTALLER_VERSION }}
+
+      - name: Download Aspire artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: packages_aspire
+          path: aspire/artifacts/packages/Release/Shipping
+
+      - name: Download SDK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: packages_sdk
+          path: sdk/artifacts/packages/Release/NonShipping
+
+      - name: Download Runtime artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: packages_runtime
+          path: runtime/artifacts/packages/Release/Shipping
+
+      - name: Download ASP.NET Core packages artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: packages_aspnetcore
+          path: aspnetcore/artifacts/packages/Release/Shipping
+
+      - name: Download ASP.NET Core installers artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: installers_aspnetcore
+          path: aspnetcore/artifacts/installers/Release
+
+      - name: Configure
+        run: |
+          set -x
+
+          dotnet nuget add source ../aspire/artifacts/packages/Release/Shipping --name aspire --configfile installer/NuGet.config
+          dotnet nuget add source ../runtime/artifacts/packages/Release/Shipping/ --name runtime --configfile installer/NuGet.config
+          dotnet nuget add source ../aspnetcore/artifacts/packages/Release/Shipping/ --name aspnetcore --configfile installer/NuGet.config
+
+          mkdir -p installer/artifacts/obj/redist/Release/downloads/
+          cp runtime/artifacts/packages/Release/Shipping/dotnet-runtime-*-linux-x86.tar.gz installer/artifacts/obj/redist/Release/downloads/
+          cp aspnetcore/artifacts/installers/Release/aspnetcore-runtime-*-linux-x86.tar.gz installer/artifacts/obj/redist/Release/downloads/
+          cp sdk/artifacts/packages/Release/NonShipping/dotnet-toolset-internal-*.zip installer/artifacts/obj/redist/Release/downloads/
+
+          sed -i.ORI 's/linux-s390x;/&linux-x86;/g' installer/src/redist/targets/GenerateBundledVersions.targets
+
+      - name: Build
+        run: |
+          set -x
+          source common.sh
+          calculate_build_id v${{ env.DOTNET_INSTALLER_VERSION }}
+
+          installer/build.sh --build --ci --configuration Release --pack --architecture x86 --runtime-id linux-x86 /p:HostRid=linux-x64 /p:DISABLE_CROSSGEN=True /p:IncludeAspNetCoreRuntime=true /p:OfficialBuildId=$OFFICIALBUILDID
+
+      - name: List artifacts
+        run: ls -lR installer/artifacts
+
+      - name: Upload Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages_installer
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            installer/artifacts/packages/Release/Shipping/dotnet-sdk-*
+
+  release:
+    name: Create release
+    needs: build_installer
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packages artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: packages_*
+          path: packages
+          merge-multiple: true
+
+      - name: Download installers artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: installers_*
+          path: installers
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lR packages installers
+
+      - name: Create release
+        uses: ncipollo/release-action@v1
+        if: github.event_name != 'pull_request'
+        with:
+          artifacts: packages/dotnet-runtime-*-linux-x86.tar.gz,packages/dotnet-sdk-*-linux-x86.tar.gz,packages/Microsoft.*.linux-x86.*.nupkg,packages/Microsoft.*.Aspire.*.nupkg,installers/aspnetcore-runtime-*-linux-x86.tar.gz
+          artifactErrorsFailBuild: true
+          draft: true
+          generateReleaseNotes: true
+          name: ${{ env.DOTNET_VERSION }}-${{ github.run_number }}
+          skipIfReleaseExists: true
+          tag: v${{ env.DOTNET_VERSION }}-${{ github.run_number }}
