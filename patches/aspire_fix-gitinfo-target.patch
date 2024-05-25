@@ -1,0 +1,14 @@
+diff --git a/aspire/Directory.Build.targets b/aspire/Directory.Build.targets
+index cbd14c7..4a4ae83 100644
+--- a/aspire/Directory.Build.targets
++++ b/aspire/Directory.Build.targets
+@@ -14,8 +14,7 @@
+     <None Include="$(PackageThirdPartyNoticesFile)" Pack="true" PackagePath="." />
+   </ItemGroup>
+
+-  <Import Condition="'$(SampleProject)' == 'true' or '$(CI)' != 'true' " Project="eng\Versions.dev.targets" />
+-  <Import Condition="'$(SampleProject)' != 'true' and '$(CI)' == 'true' " Project="eng\Versions.targets" />
++  <Import Project="eng\Versions.dev.targets" />
+
+   <Import Project="Sdk.targets" Sdk="Microsoft.DotNet.Arcade.Sdk" />
+

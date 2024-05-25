@@ -33,13 +33,19 @@ jobs:
         run: |
           git clone https://github.com/dotnet/aspire.git --single-branch --depth 1 --branch v${{ env.DOTNET_ASPIRE_VERSION }}
 
+      - name: Configure
+        run: |
+          set -x
+
+          patch -p1 < patches/aspire_fix-gitinfo-target.patch
+
       - name: Build
         run: |
           set -x
           source common.sh
           calculate_build_id v${{ env.DOTNET_ASPIRE_VERSION }}
 
-          docker run --rm -v ${{ github.workspace }}/aspire:/aspire -w /aspire -e ROOTFS_DIR=/crossrootfs/x86 mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-cross-x86-net8.0 /aspire/build.sh --restore --build --ci --configuration Release --os linux --arch x86 --pack /p:OfficialBuildId=$OFFICIALBUILDID
+          aspire/build.sh --restore --build --ci --configuration Release --os linux --arch x86 --pack /p:OfficialBuildId=$OFFICIALBUILDID
 
       - name: List artifacts
         run: ls -lR aspire/artifacts
