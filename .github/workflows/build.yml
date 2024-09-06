@@ -271,6 +271,18 @@ jobs:
           path: |
             installer/artifacts/packages/Release/Shipping/dotnet-sdk-*
 
+      - name: Run dotnet --info
+        env:
+          COMPlus_EnableDiagnostics: 0
+        run: |
+          mkdir -p bin/dotnet && tar xzf installer/artifacts/packages/Release/Shipping/dotnet-sdk-*.tar.gz -C bin/dotnet
+          bin/dotnet/dotnet --info
+
+      - name: Run dotnet --info
+        run: |
+          mkdir -p bin/dotnet && tar xzf installer/artifacts/packages/Release/Shipping/dotnet-sdk-*.tar.gz -C bin/dotnet
+          bin/dotnet/dotnet --info
+
   release:
     name: Create release
     needs: build_installer
